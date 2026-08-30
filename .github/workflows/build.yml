@@ -69,6 +69,10 @@ jobs:
           "$CXX" -std=gnu++20 -E -dM -x c++ /dev/null 2>/dev/null | grep -E "#define __cplusplus|_LIBCPP_STD_VER|__cpp_lib_atomic_ref" | head
           echo "=== guard probe ==="
           printf '#if __cplusplus >= 202002L\nCXX20_ON\n#else\nCXX20_OFF\n#endif\n' | "$CXX" -std=gnu++20 -E -P -x c++ - 2>/dev/null
+          echo "=== preprocessed atomic grep ==="
+          printf '#include <atomic>\n' | "$CXX" -std=gnu++20 -E -x c++ - 2>/dev/null | grep -c "atomic_ref"
+          echo "=== feature macros with include ==="
+          printf '#include <atomic>\n' | "$CXX" -std=gnu++20 -E -dM -x c++ - 2>/dev/null | grep -E "_LIBCPP_STD_VER|__cpp_lib_atomic_ref"
           echo "=== gcc default ==="
           g++ --version | head -1
 
