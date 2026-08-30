@@ -52,12 +52,23 @@ jobs:
             x86)          DEST_CPU=ia32;  PREFIX=i686-linux-android ;;
           esac
 
-          # Apply upstream Android patches (v8 trap-handler fix)
-          ./android-configure patch
-
           export PATH="$TOOLCHAIN/bin:$PATH"
           export CC="$TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang"
           export CXX="$TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang++"
+
+          echo "=== compiler version ==="
+          "$CXX" --version | head -2
+          echo "=== include resolution ==="
+          printf '#include <atomic>\nint main(){ std::atomic_ref<int> r(*new int(5)); return r.load() - 5; }\n' > /tmp/at.cpp
+          "$CXX" -std=gnu++20 -E -v -x c++ /tmp/at.cpp 2>&1 | grep -E "clang version|Selected GCC|^ /|search starts|^ *#include <...> search" | head -30
+          echo "=== atomic_ref compile test ==="
+          "$CXX" -std=gnu++20 -fsyntax-only /tmp/at.cpp && echo "ATOMIC_REF_OK" || echo "ATOMIC_REF_MISSING"
+          echo "=== gcc default ==="
+          g++ --version | head -1
+
+          # Apply upstream Android patches (v8 trap-handler fix)
+          ./android-configure patch
+
           export GYP_DEFINES="target_arch=$ARCH v8_target_arch=$ARCH android_target_arch=$ARCH host_os=linux OS=android android_ndk_path=$NDK"
 
           ./configure \
