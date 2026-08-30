@@ -19,16 +19,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl unzip python3 make gcc g++ patch tar
+          sudo apt-get install -y -qq curl unzip xz-utils python3 make gcc g++ patch tar git
 
       - name: Download Android NDK
         run: |
-          curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
           unzip -q ndk.zip
           ls -d android-ndk-*
 
@@ -42,7 +42,8 @@ jobs:
           API_LEVEL: ${{ inputs.api_level }}
           ARCH: ${{ inputs.arch }}
         run: |
-          NDK="$GITHUB_WORKSPACE/android-ndk-r27c"
+          set -e
+          NDK="$GITHUB_WORKSPACE/android-ndk-r29"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
 
           case "$ARCH" in
@@ -52,35 +53,38 @@ jobs:
             x86)          DEST_CPU=ia32;  PREFIX=i686-linux-android ;;
           esac
 
-          export PATH="$TOOLCHAIN/bin:$PATH"
+          # Target compiler: NDK clang wrappers (bionic/libc++)
           export CC="$TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang"
           export CXX="$TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang++"
 
+          # Host compiler for obj.host tools: Chromium's clang (as in deps/v8/DEPS),
+          # same approach Termux uses (Ubuntu GCC is too old for V8).
+          CLANG_TAR=$(grep -oE 'clang-llvmorg-[0-9]+-init-[0-9]+-g[0-9a-f]+\.tar\.xz' deps/v8/DEPS | head -1)
+          echo "V8 host clang from DEPS: $CLANG_TAR"
+          mkdir -p "$GITHUB_WORKSPACE/llvm-build"
+          curl -sSfL -o clang.tar.xz "https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/${CLANG_TAR}"
+          tar -xJf clang.tar.xz -C "$GITHUB_WORKSPACE/llvm-build"
+          export LLVM="$GITHUB_WORKSPACE/llvm-build"
+          export CC_host="$LLVM/bin/clang"
+          export CXX_host="$LLVM/bin/clang++"
+          export LINK_host="$LLVM/bin/clang++"
+
           set +e
-          echo "=== compiler version ==="
+          echo "=== target CXX version ==="
           "$CXX" --version | head -1
-          echo "=== atomic_ref compile test ==="
+          printf '#include <atomic>\nint main(){ std::atomic_ref<int> r(*new int(5)); return r.load() - 5; }\n' > /tmp/at.cpp
           "$CXX" -std=gnu++20 -fsyntax-only /tmp/at.cpp && echo ATOMIC_REF_OK || echo ATOMIC_REF_MISSING
-          echo "=== macro dump ==="
-          "$CXX" -std=gnu++20 -E -dM -x c++ /dev/null 2>/dev/null | grep --line-buffered -E "__cplusplus" | head
-          echo "=== guard probe ==="
-          printf '#if __cplusplus >= 202002L\nCXX20_ON\n#else\nCXX20_OFF\n#endif\n' | "$CXX" -std=gnu++20 -E -P -x c++ - 2>/dev/null
-          echo "=== preprocessed atomic grep ==="
-          printf '#include <atomic>\n' | "$CXX" -std=gnu++20 -E -x c++ - 2>/dev/null | grep -c "atomic_ref"
-          echo "=== feature macros with include ==="
-          printf '#include <atomic>\n' | "$CXX" -std=gnu++20 -E -dM -x c++ - 2>/dev/null | grep -E "_LIBCPP_STD_VER|__cpp_lib_atomic_ref"
-          echo "=== header file grep ==="
-          H=$(printf '#include <atomic>\n' | "$CXX" -std=gnu++20 -E -x c++ - 2>/dev/null | grep -oE '/[^ ]*c\+\+/v1/atomic' | head -1)
-          echo "atomic header: $H"
-          [ -n "$H" ] && grep -c "atomic_ref" "$H"
-          echo "=== gcc default ==="
-          g++ --version | head -1
+          echo "=== host CXX version ==="
+          "$CXX_host" --version | head -1
+          printf '#include <atomic>\nint main(){ std::atomic_ref<int> r(*new int(5)); return r.load() - 5; }\n' > /tmp/at_host.cpp
+          "$CXX_host" -std=gnu++20 -fsyntax-only /tmp/at_host.cpp && echo HOST_ATOMIC_REF_OK || echo HOST_ATOMIC_REF_MISSING
           set -e
 
           # Apply upstream Android patches (v8 trap-handler fix)
           ./android-configure patch
 
           export GYP_DEFINES="target_arch=$ARCH v8_target_arch=$ARCH android_target_arch=$ARCH host_os=linux OS=android android_ndk_path=$NDK"
+          export ANDROID_NDK_ROOT="$NDK"
 
           ./configure \
             --dest-cpu="$DEST_CPU" \
