@@ -22,7 +22,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     steps:
       - name: Install build dependencies
         run: |
@@ -169,7 +169,7 @@ jobs:
   build-webgpu-android:
     name: Build webgpu (dawn.node) android ${{ inputs.arch }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 360
     steps:
       - name: Use Node.js
         uses: actions/setup-node@v4
