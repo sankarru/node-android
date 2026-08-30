@@ -16,6 +16,9 @@ on:
         required: true
         default: arm64
 
+env:
+  CCACHE_DIR: ${{ github.workspace }}/ccache
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,11 +27,34 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl unzip xz-utils python3 make gcc g++ patch tar git
+          sudo apt-get install -y -qq curl unzip xz-utils python3 make gcc g++ patch tar git ccache
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/ccache
+          key: ccache-node-${{ inputs.version }}-${{ inputs.arch }}
+          restore-keys: |
+            ccache-node-
+          fail-on-cache-miss: false
+
+      - name: Config ccache
+        run: |
+          ccache --set-config=max_size=4G
+          ccache --set-config=compiler_check=content
+          mkdir -p "$CCACHE_DIR"
+
+      - name: Cache NDK zip
+        uses: actions/cache@v4
+        with:
+          path: ndk.zip
+          key: ndk-zip-ndk-r29-linux
 
       - name: Download Android NDK
         run: |
-          curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          if [ ! -f ndk.zip ]; then
+            curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          fi
           unzip -q ndk.zip
           ls -d android-ndk-*
 
@@ -74,14 +100,15 @@ jobs:
             x86)          DEST_CPU=ia32;  PREFIX=i686-linux-android ;;
           esac
 
-          # Target compiler: NDK clang wrappers (bionic/libc++)
-          export CC="$TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang"
-          export CXX="$TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang++"
+          # Target compiler: NDK clang wrappers (bionic/libc++), via ccache
+          export CC="ccache $TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang"
+          export CXX="ccache $TOOLCHAIN/bin/${PREFIX}${API_LEVEL}-clang++"
 
           # Host compiler for obj.host tools: Chromium's clang (as in deps/v8/DEPS),
-          # same approach Termux uses (Ubuntu GCC is too old for V8).
+          # same approach Termux uses (Ubuntu GCC is too old for V8), via ccache
           CLANG_TAR=$(grep -oE 'Linux_x64/clang-llvmorg-[0-9]+-init-[0-9]+-g[0-9a-f]+-[0-9]+\.tar\.xz' deps/v8/DEPS | head -1 | sed 's#Linux_x64/##')
           if [ -z "$CLANG_TAR" ]; then
+            grep -oE 'Linux_x64/clang-[\\._0-9a-z-]+\\.tar\\.xz' deps/v8/DEPS | head -1 | sed 's#Linux_x64/##'
             echo "Could not find clang tarball in deps/v8/DEPS" >&2
             exit 1
           fi
@@ -90,8 +117,8 @@ jobs:
           curl -sSfL -o clang.tar.xz "https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/${CLANG_TAR}"
           tar -xJf clang.tar.xz -C "$GITHUB_WORKSPACE/llvm-build"
           export LLVM="$GITHUB_WORKSPACE/llvm-build"
-          export CC_host="$LLVM/bin/clang"
-          export CXX_host="$LLVM/bin/clang++"
+          export CC_host="ccache $LLVM/bin/clang"
+          export CXX_host="ccache $LLVM/bin/clang++"
           export LINK_host="$LLVM/bin/clang++"
 
           set +e
@@ -122,6 +149,13 @@ jobs:
         working-directory: node-src
         run: make -j$(nproc)
 
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/ccache
+          key: ccache-node-${{ inputs.version }}-${{ inputs.arch }}
+
       - name: Upload libnode artifact
         uses: actions/upload-artifact@v4
         with:
@@ -145,11 +179,34 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl unzip ninja-build cmake git python3 pkg-config
+          sudo apt-get install -y -qq curl unzip ninja-build cmake git python3 pkg-config ccache
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/ccache
+          key: ccache-webgpu-${{ inputs.arch }}
+          restore-keys: |
+            ccache-webgpu-
+          fail-on-cache-miss: false
+
+      - name: Config ccache
+        run: |
+          ccache --set-config=max_size=4G
+          ccache --set-config=compiler_check=content
+          mkdir -p "$CCACHE_DIR"
+
+      - name: Cache NDK zip
+        uses: actions/cache@v4
+        with:
+          path: ndk.zip
+          key: ndk-zip-ndk-r29-linux
 
       - name: Download Android NDK
         run: |
-          curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          if [ ! -f ndk.zip ]; then
+            curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          fi
           unzip -q ndk.zip
 
       - name: Checkout node-webgpu
@@ -180,6 +237,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
             -DCMAKE_VISIBILITY_INLINES_HIDDEN=1 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_PLATFORM=android-24 \
             -DANDROID_ABI=arm64-v8a \
@@ -188,6 +247,13 @@ jobs:
           mkdir -p dist/linux-arm64
           cp out/cmake-android/dawn.node dist/linux-arm64/dawn.node
           file dist/linux-arm64/dawn.node
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/ccache
+          key: ccache-webgpu-${{ inputs.arch }}
 
       - name: Upload webgpu artifact
         uses: actions/upload-artifact@v4
