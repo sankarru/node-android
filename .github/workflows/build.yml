@@ -36,6 +36,26 @@ jobs:
         run: |
           git clone --depth 1 --branch ${{ inputs.version }} https://github.com/nodejs/node.git node-src
 
+      - name: Patch zlib.gyp for NDK cpufeatures
+        working-directory: node-src
+        run: |
+          python3 - <<'EOF'
+          p = 'deps/zlib/zlib.gyp'
+          s = open(p).read()
+          probe = """            ['OS=="mac" or OS=="ios" or OS=="freebsd" or OS=="android"', {"""
+          ins = """            ['OS=="android"', {
+              'sources': [
+                '<(android_ndk_path)/sources/android/cpufeatures/cpu-features.c'
+              ],
+            }],
+"""
+          assert probe in s, "probe not found in zlib.gyp"
+          assert "cpufeatures" not in s, "already patched"
+          s = s.replace(probe, ins + probe, 1)
+          open(p, 'w').write(s)
+          print('patched zlib.gyp')
+          EOF
+
       - name: Configure for Android
         working-directory: node-src
         env:
