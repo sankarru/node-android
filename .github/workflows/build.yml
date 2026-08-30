@@ -63,6 +63,12 @@ jobs:
           "$CXX" -std=gnu++20 -E -v -x c++ /tmp/at.cpp 2>&1 | grep -E "clang version|Selected GCC|^ /|search starts|^ *#include <...> search" | head -30
           echo "=== atomic_ref compile test ==="
           "$CXX" -std=gnu++20 -fsyntax-only /tmp/at.cpp && echo "ATOMIC_REF_OK" || echo "ATOMIC_REF_MISSING"
+          echo "=== macro dump ==="
+          printf '__cplusplus'
+          printf '\n' | "$CXX" -std=gnu++20 -E -P -x c++ -  2>/dev/null | tail -1 | grep -oE "__cplusplus|...." || true
+          "$CXX" -std=gnu++20 -E -dM -x c++ /dev/null 2>/dev/null | grep -E "#define __cplusplus|_LIBCPP_STD_VER|__cpp_lib_atomic_ref" | head
+          echo "=== guard probe ==="
+          printf '#if __cplusplus >= 202002L\nCXX20_ON\n#else\nCXX20_OFF\n#endif\n' | "$CXX" -std=gnu++20 -E -P -x c++ - 2>/dev/null
           echo "=== gcc default ==="
           g++ --version | head -1
 
