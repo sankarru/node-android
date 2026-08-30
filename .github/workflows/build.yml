@@ -59,7 +59,11 @@ jobs:
 
           # Host compiler for obj.host tools: Chromium's clang (as in deps/v8/DEPS),
           # same approach Termux uses (Ubuntu GCC is too old for V8).
-          CLANG_TAR=$(grep -oE 'clang-llvmorg-[0-9]+-init-[0-9]+-g[0-9a-f]+\.tar\.xz' deps/v8/DEPS | head -1)
+          CLANG_TAR=$(grep -oE 'Linux_x64/clang-llvmorg-[0-9]+-init-[0-9]+-g[0-9a-f]+-[0-9]+\.tar\.xz' deps/v8/DEPS | head -1 | sed 's#Linux_x64/##')
+          if [ -z "$CLANG_TAR" ]; then
+            echo "Could not find clang tarball in deps/v8/DEPS" >&2
+            exit 1
+          fi
           echo "V8 host clang from DEPS: $CLANG_TAR"
           mkdir -p "$GITHUB_WORKSPACE/llvm-build"
           curl -sSfL -o clang.tar.xz "https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/${CLANG_TAR}"
