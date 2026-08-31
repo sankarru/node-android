@@ -136,10 +136,6 @@ jobs:
           # Apply upstream Android patches (v8 trap-handler fix)
           ./android-configure patch
 
-          # crates.gyp drops --release whenever cargo_rust_target is set,
-          # building debug crates while expecting a release archive. Keep it.
-          sed -i "s/cargo_build_flags': \['--target'/cargo_build_flags': ['--release', '--target'/" deps/crates/crates.gyp
-
           # configure.py only sets cargo_rust_target for win/mac; without it
           # the crates are built for the x86_64 host and the arm64 libnode.so
           # link dies with 'incompatible with aarch64linux'. Mirror the
@@ -338,7 +334,13 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_PLATFORM=android-24 \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_STL=c++_static
+            -DANDROID_STL=c++_static \
+            -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,undefs -Wl,--unresolved-symbols=ignore-all"
+          # The Android toolchain links with -Wl,--no-undefined (-z defs), which
+          # rejects dawn's weak-undefined Napi stubs (they only work on host
+          # Linux/macOS, where the flags above disable -z defs). The napi_*
+          # symbols resolve at runtime from the libnode.so loaded by the node
+          # process, so they must stay undefined in the .node module.
           ninja -C out/cmake-android dawn.node
           mkdir -p dist/linux-arm64
           cp out/cmake-android/dawn.node dist/linux-arm64/dawn.node
