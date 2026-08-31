@@ -140,7 +140,23 @@ jobs:
           # building debug crates while expecting a release archive. Keep it.
           sed -i "s/cargo_build_flags': \['--target'/cargo_build_flags': ['--release', '--target'/" deps/crates/crates.gyp
 
-          export GYP_DEFINES="target_arch=$ARCH v8_target_arch=$ARCH android_target_arch=$ARCH host_os=linux OS=android android_ndk_path=$NDK cargo_rust_target=$RUST_TARGET"
+          # configure.py only sets cargo_rust_target for win/mac; without it
+          # the crates are built for the x86_64 host and the arm64 libnode.so
+          # link dies with 'incompatible with aarch64linux'. Mirror the
+          # upstream override pattern so the env var flows into gyp.
+          python3 - <<'EOF'
+          p = 'configure.py'
+          s = open(p).read()
+          needle = "  if flavor == 'mac' and target_arch == 'x64':\n    o['variables']['cargo_rust_target'] = 'x86_64-apple-darwin'\n"
+          assert needle in s, 'configure.py anchor not found'
+          assert "CARGO_RUST_TARGET" not in s, 'already patched'
+          s = s.replace(needle, needle + "\n  # Cross-compiled Android builds must target the Android triple.\n  if os.environ.get('CARGO_RUST_TARGET'):\n    o['variables']['cargo_rust_target'] = os.environ['CARGO_RUST_TARGET']\n", 1)
+          open(p, 'w').write(s)
+          print('patched configure.py')
+          EOF
+
+          export GYP_DEFINES="target_arch=$ARCH v8_target_arch=$ARCH android_target_arch=$ARCH host_os=linux OS=android android_ndk_path=$NDK"
+          export CARGO_RUST_TARGET="$RUST_TARGET"
           export ANDROID_NDK_ROOT="$NDK"
 
           ./configure \
@@ -312,6 +328,8 @@ jobs:
             -DDAWN_USE_X11=OFF \
             -DDAWN_USE_WAYLAND=OFF \
             -DDAWN_SUPPORTS_CXX_MODULES=OFF \
+            -DDAWN_BUILD_PROTOBUF=OFF \
+            -DDAWN_ENABLE_SWIFTSHADER=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
             -DCMAKE_VISIBILITY_INLINES_HIDDEN=1 \
