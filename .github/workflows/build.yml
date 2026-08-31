@@ -150,12 +150,10 @@ jobs:
         working-directory: node-src
         run: |
           set -e
-          export LDFLAGS="${LDFLAGS:-} -latomic"
-          # gyp makefiles assign LDFLAGS themselves (beats env), so inject
-          # -latomic into every generated host tool makefile (mksnapshot needs
-          # libatomic for 16-byte cas on the host build).
-          find out -name '*.host.mk' -exec sed -i -E 's@^(LDFLAGS ?[:?]?= .*)$@\1 -latomic@' {} +
-          grep -rl -- '-latomic' out/Release/obj.host/tools/v8_gypfiles/ | head
+          # gyp makefiles emit 'LDFLAGS.host ?= $(LDFLAGS_host)', so the env
+          # var LDFLAGS_host feeds directly into host (mksnapshot) link flags.
+          # mksnapshot needs libatomic for 16-byte C++ atomics on x86_64.
+          export LDFLAGS_host="-latomic"
           make -j$(nproc)
 
       - name: Save ccache
