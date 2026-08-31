@@ -95,10 +95,10 @@ jobs:
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
 
           case "$ARCH" in
-            arm64|aarch64) DEST_CPU=arm64; PREFIX=aarch64-linux-android ;;
-            arm)          DEST_CPU=arm;   PREFIX=armv7a-linux-androideabi ;;
-            x86_64)       DEST_CPU=x64;   PREFIX=x86_64-linux-android ;;
-            x86)          DEST_CPU=ia32;  PREFIX=i686-linux-android ;;
+            arm64|aarch64) DEST_CPU=arm64; PREFIX=aarch64-linux-android; RUST_TARGET=aarch64-linux-android ;;
+            arm)          DEST_CPU=arm;   PREFIX=armv7a-linux-androideabi; RUST_TARGET=armv7-linux-androideabi ;;
+            x86_64)       DEST_CPU=x64;   PREFIX=x86_64-linux-android; RUST_TARGET=x86_64-linux-android ;;
+            x86)          DEST_CPU=ia32;  PREFIX=i686-linux-android; RUST_TARGET=i686-linux-android ;;
           esac
 
           # Target compiler: NDK clang wrappers (bionic/libc++), via ccache
@@ -136,7 +136,11 @@ jobs:
           # Apply upstream Android patches (v8 trap-handler fix)
           ./android-configure patch
 
-          export GYP_DEFINES="target_arch=$ARCH v8_target_arch=$ARCH android_target_arch=$ARCH host_os=linux OS=android android_ndk_path=$NDK"
+          # crates.gyp drops --release whenever cargo_rust_target is set,
+          # building debug crates while expecting a release archive. Keep it.
+          sed -i "s/cargo_build_flags': \['--target'/cargo_build_flags': ['--release', '--target'/" deps/crates/crates.gyp
+
+          export GYP_DEFINES="target_arch=$ARCH v8_target_arch=$ARCH android_target_arch=$ARCH host_os=linux OS=android android_ndk_path=$NDK cargo_rust_target=$RUST_TARGET"
           export ANDROID_NDK_ROOT="$NDK"
 
           ./configure \
@@ -154,6 +158,28 @@ jobs:
           # var LDFLAGS_host feeds directly into host (mksnapshot) link flags.
           # mksnapshot needs libatomic for 16-byte C++ atomics on x86_64.
           export LDFLAGS_host="-latomic"
+          ARCH="${{ inputs.arch }}"
+          API="${{ inputs.api_level }}"
+          NDK="$GITHUB_WORKSPACE/android-ndk-r29"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          case "$ARCH" in
+            arm64|aarch64) RUST_TARGET=aarch64-linux-android;        PREFIX=aarch64-linux-android ;;
+            arm)          RUST_TARGET=armv7-linux-androideabi;       PREFIX=armv7a-linux-androideabi ;;
+            x86_64)       RUST_TARGET=x86_64-linux-android;          PREFIX=x86_64-linux-android ;;
+            x86)          RUST_TARGET=i686-linux-android;            PREFIX=i686-linux-android ;;
+          esac
+          # Node builds Rust crates (temporal) for the host by default when
+          # cross-compiling, producing x86_64 objects that fail the aarch64
+          # libnode.so link. Install the cross std and build them for the
+          # Android target (cargo rustc only emits a static archive, so no
+          # target linker is required; cc-crate shims need the NDK C compiler).
+          command -v rustup >/dev/null 2>&1 && rustup target add "$RUST_TARGET" || echo "warn: rustup not available"
+          export CC="$TOOLCHAIN/bin/${PREFIX}${API}-clang"
+          export CXX="$TOOLCHAIN/bin/${PREFIX}${API}-clang++"
+          export AR="$TOOLCHAIN/bin/llvm-ar"
+          echo "Pre-building node crates for $RUST_TARGET"
+          (cd deps/crates && cargo rustc --release --target "$RUST_TARGET" --frozen \
+             --target-dir "$GITHUB_WORKSPACE/node-src/out/Release/obj/gen")
           make -j$(nproc)
 
       - name: Save ccache
@@ -188,6 +214,21 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl unzip ninja-build cmake git python3 pkg-config ccache
 
+      # The standard runner only has ~14GB; dawn deps + NDK + ccache get
+      # close. Reclaim the worst preloaded bloat that we never use.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/lib/node_modules
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
+          rm -rf ~/.cache/pip ~/.npm /tmp/ms-playwright 2>/dev/null || true
+          df -h / | tail -1
+
       - name: Restore ccache
         uses: actions/cache/restore@v4
         with:
@@ -199,7 +240,9 @@ jobs:
 
       - name: Config ccache
         run: |
-          ccache --set-config=max_size=4G
+          # Smaller cap than the node job: the webgpu ccache dir lives on the
+          # same runner disk as the checkout.
+          ccache --set-config=max_size=2G
           ccache --set-config=compiler_check=content
           mkdir -p "$CCACHE_DIR"
 
@@ -225,14 +268,36 @@ jobs:
           find third_party -name .git -type d -exec rm -rf {} + 2>/dev/null || true
           echo "submodule .git dirs cleaned"
 
-      # Upstream flow: gclient-sync pins dawn DEPS (vulkan headers, glslang,
-      # spirv-tools, node headers) and does a host build, proving the tree is
-      # consistent before we cross-compile.
-      - name: Bootstrap and host-build dawn.node
+      # Dawn DEPS for the Android cross build only. The upstream host
+      # bootstrap (npm ci + node build/build.js) compiles dawn.node for the
+      # host runner, which we do not ship and which explodes the 14GB runner
+      # disk (full-history SwiftShader/ANGLE clones + the host ninja build).
+      # We fetch the same git deps gclient would, shallow, with the image
+      # android SDK turned off (we use our own NDK) and no node download
+      # (setup-node already provides node).
+      - name: Fetch dawn DEPS (cross-compile)
         working-directory: repo
         run: |
-          npm ci
-          node build/build.js
+          export PATH="$PWD/third_party/depot_tools:$PATH"
+          export DEPOT_TOOLS_UPDATE=0
+          cd third_party/dawn
+          cat > .gclient <<'EOF'
+          solutions = [
+              {
+                  "name": ".",
+                  "url": "https://dawn.googlesource.com/dawn",
+                  "deps_file": "DEPS",
+                  "managed": False,
+                  "custom_vars": {
+                      "dawn_node": True,
+                      "checkout_android": False,
+                  }
+              }
+          ]
+          EOF
+          gclient metrics --opt-out || true
+          gclient sync --no-history
+          df -h / | tail -1
 
       - name: Disk check before cross-compile
         run: df -h / && echo '--- repo ---' && du -sh repo 2>/dev/null && du -sh repo/third_party 2>/dev/null
