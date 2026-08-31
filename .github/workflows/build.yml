@@ -56,6 +56,7 @@ jobs:
             curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
           fi
           unzip -q ndk.zip
+          rm -f ndk.zip
           ls -d android-ndk-*
 
       - name: Fetch Node.js source
@@ -147,7 +148,9 @@ jobs:
 
       - name: Build
         working-directory: node-src
-        run: make -j$(nproc)
+        run: |
+          export LDFLAGS="${LDFLAGS:-} -latomic"
+          make -j$(nproc)
 
       - name: Save ccache
         if: always()
@@ -208,12 +211,15 @@ jobs:
             curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r29-linux.zip
           fi
           unzip -q ndk.zip
+          rm -f ndk.zip
 
       - name: Checkout node-webgpu
         run: |
           git clone https://github.com/dawn-gpu/node-webgpu.git repo
           cd repo
-          git submodule update --init
+          git submodule update --init --depth 1
+          find third_party -name .git -type d -exec rm -rf {} + 2>/dev/null || true
+          echo "submodule .git dirs cleaned"
 
       # Upstream flow: gclient-sync pins dawn DEPS (vulkan headers, glslang,
       # spirv-tools, node headers) and does a host build, proving the tree is
@@ -223,6 +229,9 @@ jobs:
         run: |
           npm ci
           node build/build.js
+
+      - name: Disk check before cross-compile
+        run: df -h / && echo '--- repo ---' && du -sh repo 2>/dev/null && du -sh repo/third_party 2>/dev/null
 
       - name: Cross-compile dawn.node for Android
         env:
