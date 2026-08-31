@@ -149,7 +149,13 @@ jobs:
       - name: Build
         working-directory: node-src
         run: |
+          set -e
           export LDFLAGS="${LDFLAGS:-} -latomic"
+          # gyp makefiles assign LDFLAGS themselves (beats env), so inject
+          # -latomic into every generated host tool makefile (mksnapshot needs
+          # libatomic for 16-byte cas on the host build).
+          find out -name '*.host.mk' -exec sed -i -E 's@^(LDFLAGS ?[:?]?= .*)$@\1 -latomic@' {} +
+          grep -rl -- '-latomic' out/Release/obj.host/tools/v8_gypfiles/ | head
           make -j$(nproc)
 
       - name: Save ccache
